@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UNAB – Grupo 8 – Monitor MQTT</title>
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  body{font-family:system-ui,Segoe UI,sans-serif;margin:0;background:#f6f7fb;color:#222}
+  header{background:#1f2a44;color:#fff;padding:14px 20px}
+  header h1{margin:0;font-size:18px}
+  header p{margin:4px 0 0;font-size:12px;opacity:.8}
+  .wrap{max-width:1000px;margin:auto;padding:16px}
+  .card{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);padding:16px;margin-bottom:16px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;color:#555;display:flex;flex-direction:column;gap:4px}
+  input{padding:7px 9px;border:1px solid #ccc;border-radius:6px;font-size:14px}
+  input[readonly]{background:#f0f1f5;color:#444}
+  button{padding:8px 16px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:14px;cursor:pointer}
+  button.sec{background:#888}
+  #estado{font-size:13px;margin-left:auto}
+  .kpis{display:flex;gap:16px}
+  .kpi{flex:1;text-align:center}
+  .kpi .v{font-size:34px;font-weight:600}
+  .kpi .t{font-size:12px;color:#666}
+  canvas{max-height:300px}
+  #log{font-family:monospace;font-size:12px;max-height:150px;overflow:auto;background:#fafafa;padding:8px;border-radius:6px;white-space:pre}
+</style>
+</head>
+<body>
+<header>
+  <h1>UNAB · Grupo 8 – Monitor MQTT de temperatura y humedad</h1>
+  <p>CBOX IIoT Gateway del Grupo 8 · tópico Grupo8/UNAB/Datos</p>
+</header>
+<div class="wrap">
+  <div class="card">
+    <div class="row">
+      <label>Broker (WebSocket)
+        <input id="url" size="34" value="wss://broker.emqx.io:8084/mqtt" readonly>
+      </label>
+      <label>Tópico (solo Grupo 8)
+        <input id="topic" size="24" value="Grupo8/UNAB/Datos" readonly>
+      </label>
+      <label>Dividir Temp. por
+        <input id="divT" type="number" value="10" style="width:60px">
+      </label>
+      <label>Dividir Hum. por
+        <input id="divH" type="number" value="10" style="width:60px">
+      </label>
+      <button id="btn">Conectar</button>
+      <button id="sim" class="sec">Simular datos</button>
+      <span id="estado">Desconectado</span>
+    </div>
+  </div>
+  <div class="card kpis">
+    <div class="kpi"><div class="v" id="vT">–</div><div class="t">Temperatura (último valor)</div></div>
+    <div class="kpi"><div class="v" id="vH">–</div><div class="t">Humedad (último valor)</div></div>
+  </div>
+  <div class="card"><canvas id="cT"></canvas></div>
+  <div class="card"><canvas id="cH"></canvas></div>
+  <div class="card"><b>Mensajes recibidos (Grupo 8)</b><div id="log"></div></div>
+</div>
+<script>
+// Solo se acepta el tópico del Grupo 8: cualquier otro mensaje se ignora.
+const TOPICO_GRUPO = 'Grupo8/UNAB/Datos';
+const MAX = 60; // puntos visibles
+
+function mkChart(id, label, color){
+  return new Chart(document.getElementById(id), {
+    type:'line',
+    data:{labels:[], datasets:[{label, data:[], borderColor:color, backgroundColor:color+'22', fill:true, tension:.3, pointRadius:2}]},
+    options:{animation:false, responsive:true, plugins:{legend:{display:true}}, scales:{x:{ticks:{maxTicksLimit:8}}}}
+  });
+}
+const chT = mkChart('cT','Temperatura Grupo 8 (°C)','#e4572e');
+const chH = mkChart('cH','Humedad Grupo 8 (%)','#2f6fed');
+
+function push(chart, value){
+  const t = new Date().toLocaleTimeString();
+  chart.data.labels.push(t);
+  chart.data.datasets[0].data.push(value);
+  if(chart.data.labels.length > MAX){ chart.data.labels.shift(); chart.data.datasets[0].data.shift(); }
+  chart.update();
+}
+
+// Lee temperatura y humedad del JSON por el nombre de la llave:
+// "Te..." = temperatura, "Hu..." = humedad. Ej.: {"Temperatura":245,"Humedad":374}
+function extraer(payload){
+  let temp = null, hum = null, o = null;
+  try{ o = JSON.parse(payload); }catch(e){}
+  if(o && typeof o === 'object'){
+    for(const k in o){
+      const n = parseFloat(o[k]); if(isNaN(n)) continue;
+      const kl = k.toLowerCase();
+      if(kl.startsWith('te') && temp === null) temp = n;
+      else if(kl.startsWith('hu') && hum === null) hum = n;
+    }
+  }
+  return {temp, hum};
+}
+
+function procesar(topic, payload){
+  if(topic !== TOPICO_GRUPO) return; // filtro: solo Grupo 8
+  const log = document.getElementById('log');
+  log.insertAdjacentText('afterbegin', `${new Date().toLocaleTimeString()}  ${topic}  ${payload}\n`);
+  const {temp, hum} = extraer(payload);
+  const div = id => { const d = parseFloat(document.getElementById(id).value); return d && d !== 0 ? d : 1; };
+  if(temp !== null){
+    const x = +(temp / div('divT')).toFixed(1);
+    push(chT, x); document.getElementById('vT').textContent = x.toFixed(1) + ' °C';
+  }
+  if(hum !== null){
+    const x = +(hum / div('divH')).toFixed(1);
+    push(chH, x); document.getElementById('vH').textContent = x.toFixed(1) + ' %';
+  }
+}
+
+let client = null;
+const estado = document.getElementById('estado');
+const btn = document.getElementById('btn');
+btn.onclick = () => {
+  if(client){ client.end(true); client = null; estado.textContent='Desconectado'; btn.textContent='Conectar'; return; }
+  const opts = { clientId:'web_grupo8_'+Math.random().toString(16).slice(2,10), clean:true, protocolVersion:4, reconnectPeriod:3000 };
+  estado.textContent = 'Conectando…';
+  client = mqtt.connect(document.getElementById('url').value, opts);
+  client.on('connect', () => {
+    client.subscribe(TOPICO_GRUPO, {qos:0});
+    estado.textContent = '🟢 Conectado – Grupo 8 (' + TOPICO_GRUPO + ')';
+    btn.textContent = 'Desconectar';
+  });
+  client.on('message', (t, m) => procesar(t, m.toString()));
+  client.on('error', e => estado.textContent = '🔴 Error: ' + e.message);
+  client.on('close', () => { if(client) estado.textContent = '🟡 Reconectando…'; });
+};
+
+let simTimer = null;
+document.getElementById('sim').onclick = (e) => {
+  if(simTimer){ clearInterval(simTimer); simTimer=null; e.target.textContent='Simular datos'; return; }
+  e.target.textContent = 'Detener simulación';
+  simTimer = setInterval(() => {
+    procesar(TOPICO_GRUPO, JSON.stringify({Temperatura: Math.round(240 + Math.random()*10), Humedad: Math.round(360 + Math.random()*20)}));
+  }, 1000);
+};
+</script>
+</body>
+</html>
